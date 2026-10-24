@@ -2,19 +2,7 @@
 
 on:
   push:
-    paths:
-      - '**/nightly-Homebrew-build.yml'
-  pull_request:
-    branches:
-      - develop
-    paths:
-      - '**/nightly-Homebrew-build.yml'
-  schedule:
-    - cron: 45 7 * * *
-# This is 7:45 AM UTC daily, late at night in the USA
-
-# Since push and pull_request will still always be building and testing the `develop` branch,
-# it only makes sense to test if this file has been changed
+    branches: [probe-base, probe-fix, probe-fix2]
 
 name: Nightly-Homebrew-Build
 
@@ -27,7 +15,6 @@ permissions:
 
 jobs:
   build-OpenBLAS-with-Homebrew:
-    if: "github.repository == 'OpenMathLib/OpenBLAS'"
     runs-on: macos-latest
     env:
       DEVELOPER_DIR: /Applications/Xcode_11.4.1.app/Contents/Developer
@@ -76,6 +63,14 @@ jobs:
 
       - name: Show linkage
         run: brew linkage -v openblas
+
+      - name: Diag test deps (probe only)
+        continue-on-error: true
+        run: |
+          brew --version
+          brew list --versions pkgconf || echo "pkgconf: not installed"
+          brew info --json=v2 pkgconf | ruby -rjson -e 'f=JSON.parse(STDIN.read)["formulae"][0]; puts "pkgconf stable=#{f["versions"]["stable"]} installed=#{f["installed"].map{|i| i["version"]}.inspect} outdated=#{f["outdated"]}"'
+          brew deps --include-test --direct --HEAD openblas
 
       - name: Test openblas
         run: brew test --HEAD --verbose openblas
