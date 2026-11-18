@@ -1,0 +1,132 @@
+name: probe-fixed msys2 MINGW32 ccache
+on:
+  push:
+    branches: [probe-mingw32-ccache]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  msys2:
+    runs-on: ${{ matrix.runner || 'windows-latest' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        msystem: [MINGW32]
+        idx: [int32]
+        build-type: [Release]
+        include:
+          - msystem: MINGW32
+            idx: int32
+            fc-pkg:
+
+    defaults:
+      run:
+        # Use MSYS2 bash as default shell
+        shell: msys2 {0}
+
+    env:
+      CHERE_INVOKING: 1
+
+    steps:
+      - name: Get CPU name
+        shell: pwsh
+        run : |
+          Get-CIMInstance -Class Win32_Processor | Select-Object -Property Name
+
+      - name: Install build dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          release: false  # Use pre-installed version
+          install: base-devel ${{ matrix.msystem == 'MINGW32' && 'ccache' || '' }}
+          pacboy: >-
+            cc:p
+            ${{ matrix.fc-pkg }}
+            cmake:p
+            ninja:p
+            ${{ matrix.msystem != 'MINGW32' && 'ccache:p' || '' }}
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Prepare ccache
+        # Get cache location of ccache
+        # Create key that is used in action/cache/restore and action/cache/save steps
+        id: ccache-prepare
+        run: |
+          echo "ccachedir=$(cygpath -m $(ccache -k cache_dir))" >> $GITHUB_OUTPUT
+          # We include the commit sha in the cache key, as new cache entries are
+          # only created if there is no existing entry for the key yet.
+          echo "key=ccache-msys2-${{ matrix.msystem }}-${{ matrix.idx }}-${{ matrix.build-type }}-${{ github.ref }}-${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ steps.ccache-prepare.outputs.ccachedir }}
+          key: ${{ steps.ccache-prepare.outputs.key }}
+          # Restore a matching ccache cache entry. Prefer same branch.
+          restore-keys: |
+            ccache-msys2-${{ matrix.msystem }}-${{ matrix.idx }}-${{ matrix.build-type }}-${{ github.ref }}
+            ccache-msys2-${{ matrix.msystem }}-${{ matrix.idx }}-${{ matrix.build-type }}
+
+      - name: Configure ccache
+        # Limit the maximum size and switch on compression to avoid exceeding the total disk or cache quota.
+        run: |
+          which ccache
+          test -d ${{ steps.ccache-prepare.outputs.ccachedir }} || mkdir -p ${{ steps.ccache-prepare.outputs.ccachedir }}
+          echo "max_size = 250M" > ${{ steps.ccache-prepare.outputs.ccachedir }}/ccache.conf
+          echo "compression = true" >> ${{ steps.ccache-prepare.outputs.ccachedir }}/ccache.conf
+          ccache -p
+          ccache -s
+          echo $HOME
+          cygpath -w $HOME
+
+      - name: Configure OpenBLAS
+        run: |
+          mkdir build && cd build
+          cmake -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} \
+                -DBUILD_SHARED_LIBS=ON \
+                -DBUILD_STATIC_LIBS=ON \
+                -DDYNAMIC_ARCH=ON \
+                -DUSE_THREAD=ON \
+                -DNUM_THREADS=64 \
+                -DTARGET=${{ matrix.target || 'CORE2' }} \
+                ${{ matrix.idx64-flags }} \
+                -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+                -DCMAKE_Fortran_COMPILER_LAUNCHER=ccache \
+                ..
+
+      - name: Build OpenBLAS
+        run: cd build && cmake --build .
+
+      - name: Show ccache status
+        continue-on-error: true
+        run: ccache -s
+
+      - name: Save ccache
+        # Save the cache after we are done (successfully) building
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ steps.ccache-prepare.outputs.ccachedir }}
+          key: ${{ steps.ccache-prepare.outputs.key }}
+
+      - name: Run tests
+        id: run-ctest
+        timeout-minutes: 60
+        run: cd build && ctest
+
+      - name: Re-run tests
+        if: always() && (steps.run-ctest.outcome == 'failure')
+        timeout-minutes: 60
+        run: |
+          cd build
+          echo "::group::Re-run ctest"
+          ctest --rerun-failed --output-on-failure || true
+          echo "::endgroup::"
+          echo "::group::Log from these tests"
+          [ ! -f Testing/Temporary/LastTest.log ] || cat Testing/Temporary/LastTest.log
+          echo "::endgroup::"
+
+
