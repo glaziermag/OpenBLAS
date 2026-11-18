@@ -1,4 +1,4 @@
-name: probe-fixed msys2 MINGW32 ccache
+name: probe-fixedB msys2 MINGW32 no-ccache
 on:
   push:
     branches: [probe-mingw32-ccache]
@@ -12,13 +12,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        msystem: [MINGW32]
+        msystem: [MINGW32, UCRT64]
         idx: [int32]
         build-type: [Release]
         include:
+          - msystem: UCRT64
+            idx: int32
+            fc-pkg: fc:p
           - msystem: MINGW32
             idx: int32
             fc-pkg:
+            no-ccache: true  # MSYS2 dropped mingw-w64-i686-ccache
 
     defaults:
       run:
@@ -40,18 +44,19 @@ jobs:
           msystem: ${{ matrix.msystem }}
           update: true
           release: false  # Use pre-installed version
-          install: base-devel ${{ matrix.msystem == 'MINGW32' && 'ccache' || '' }}
+          install: base-devel
           pacboy: >-
             cc:p
             ${{ matrix.fc-pkg }}
             cmake:p
             ninja:p
-            ${{ matrix.msystem != 'MINGW32' && 'ccache:p' || '' }}
+            ${{ !matrix.no-ccache && 'ccache:p' || '' }}
 
       - name: Checkout repository
         uses: actions/checkout@v6
 
       - name: Prepare ccache
+        if: ${{ !matrix.no-ccache }}
         # Get cache location of ccache
         # Create key that is used in action/cache/restore and action/cache/save steps
         id: ccache-prepare
@@ -62,6 +67,7 @@ jobs:
           echo "key=ccache-msys2-${{ matrix.msystem }}-${{ matrix.idx }}-${{ matrix.build-type }}-${{ github.ref }}-${{ github.sha }}" >> $GITHUB_OUTPUT
 
       - name: Restore ccache
+        if: ${{ !matrix.no-ccache }}
         uses: actions/cache/restore@v5
         with:
           path: ${{ steps.ccache-prepare.outputs.ccachedir }}
@@ -72,6 +78,7 @@ jobs:
             ccache-msys2-${{ matrix.msystem }}-${{ matrix.idx }}-${{ matrix.build-type }}
 
       - name: Configure ccache
+        if: ${{ !matrix.no-ccache }}
         # Limit the maximum size and switch on compression to avoid exceeding the total disk or cache quota.
         run: |
           which ccache
@@ -94,18 +101,19 @@ jobs:
                 -DNUM_THREADS=64 \
                 -DTARGET=${{ matrix.target || 'CORE2' }} \
                 ${{ matrix.idx64-flags }} \
-                -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-                -DCMAKE_Fortran_COMPILER_LAUNCHER=ccache \
+                ${{ !matrix.no-ccache && '-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_Fortran_COMPILER_LAUNCHER=ccache' || '' }} \
                 ..
 
       - name: Build OpenBLAS
         run: cd build && cmake --build .
 
       - name: Show ccache status
+        if: ${{ !matrix.no-ccache }}
         continue-on-error: true
         run: ccache -s
 
       - name: Save ccache
+        if: ${{ !matrix.no-ccache }}
         # Save the cache after we are done (successfully) building
         uses: actions/cache/save@v5
         with:
@@ -128,5 +136,3 @@ jobs:
           echo "::group::Log from these tests"
           [ ! -f Testing/Temporary/LastTest.log ] || cat Testing/Temporary/LastTest.log
           echo "::endgroup::"
-
-
